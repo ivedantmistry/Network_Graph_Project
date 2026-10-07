@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>NLP Network Graph Visualizer</title>
+    <!-- Load Vis.js Library for interactive graph rendering -->
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #121212;
+            color: #fff;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        textarea {
+            width: 80%;
+            height: 150px;
+            background: #1e1e1e;
+            color: #fff;
+            border: 1px solid #333;
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 14px;
+            resize: vertical;
+        }
+
+        button {
+            margin-top: 10px;
+            padding: 10px 20px;
+            background: #4f46e5;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+
+        button:hover {
+            background: #4338ca;
+        }
+
+        #mynetwork {
+            width: 80%;
+            height: 600px;
+            border: 1px solid #333;
+            background: #18181b;
+            margin-top: 20px;
+            border-radius: 5px;
+        }
+
+        h2 {
+            margin-bottom: 5px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h2>NLP Character Network Generator</h2>
+    <p>Paste any raw text below to extract entities and generate a live network graph.</p>
+
+    <textarea id="inputText" placeholder="Paste your text or book snippet here..."></textarea>
+    <button onclick="generateGraph()">Generate Graph</button>
+
+    <div id="mynetwork"></div>
+
+    <script>
+        async function generateGraph() {
+            const text = document.getElementById('inputText').value;
+            if (!text.trim()) {
+                alert("Please enter some text first!");
+                return;
+            }
+
+            // Call your FastAPI backend
+            try {
+                const response = await fetch('http://127.0.0.1:8000/api/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: text, window_size: 15 })
+                });
+
+                const data = await response.json();
+
+                // Format nodes and edges for Vis.js
+                // Map edge weight to edge width for visual depth
+                const formattedEdges = data.edges.map(e => ({
+                    from: e.source,
+                    to: e.target,
+                    value: e.weight,
+                    title: `Strength: ${e.weight}`
+                }));
+
+                const nodes = new vis.DataSet(data.nodes);
+                const edges = new vis.DataSet(formattedEdges);
+
+                const container = document.getElementById('mynetwork');
+                const graphData = { nodes: nodes, edges: edges };
+                const options = {
+                    nodes: { shape: 'dot', size: 16, font: { color: '#ffffff' } },
+                    edges: { color: { color: '#888888', highlight: '#ffffff' }, width: 2 },
+                    physics: { barnesHut: { gravitationalConstant: -2000, centralGravity: 0.3, springLength: 95 } }
+                };
+
+                // Render graph
+                new vis.Network(container, graphData, options);
+
+            } catch (error) {
+                console.error("Error communicating with backend:", error);
+                alert("Failed to connect to Python backend. Make sure Uvicorn is running!");
+            }
+        }
+    </script>
+</body>
+
+</html>
