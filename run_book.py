@@ -34,6 +34,14 @@ def build_character_network(text, window_size=15):
 
     canonical_map = normalize_names(raw_characters)
 
+    print("Hunting for active speakers via syntax tree...")
+    active_speakers = extract_speakers(doc, canonical_map)
+    print(f"Found {len(active_speakers)} explicit dialogue actions.")
+    if active_speakers:
+        print(f"Sample of speakers found: {active_speakers[:5]}")
+
+    characters = []
+
     characters = []
     for token in doc:
         if token.ent_type_ == "PERSON":
@@ -59,18 +67,46 @@ def build_character_network(text, window_size=15):
     return G
 
 
-# --- MAIN EXECUTION ---
-filename = "book.txt"  # Make sure your downloaded .txt book has this name
+def extract_speakers(doc, canonical_map):
+    """
+    Traverses the dependency tree to find active speakers of dialogue.
+    Returns a list of tuples: (Canonical_Speaker_Name, Verb_Index)
+    """
+    speech_verbs = [
+        "say",
+        "whisper",
+        "shout",
+        "reply",
+        "gasp",
+        "mutter",
+        "ask",
+        "answer",
+        "cry",
+    ]
+    speakers_found = []
+
+    for word in doc:
+
+        if word.lemma_ in speech_verbs:
+
+            for child in word.children:
+                if child.dep_ == "nsubj" and child.ent_type_ == "PERSON":
+                    raw_name = child.text
+
+                    if raw_name in canonical_map:
+                        canonical_speaker = canonical_map[raw_name]
+                        speakers_found.append((canonical_speaker, word.i))
+
+    return speakers_found
+
+
+filename = "book.txt"
 
 try:
     print(f"Reading '{filename}'...")
     with open(filename, "r", encoding="utf-8") as file:
         book_text = file.read()
 
-    # Optional: Slice the text if you want to test just the first 10,000 characters/words first
-    # book_text = book_text[:50000]
-
-    # Build the network graph with a sliding window of 15 words
     network = build_character_network(book_text, window_size=15)
 
     print("\n=== BOOK ANALYSIS RESULTS ===")
@@ -78,14 +114,13 @@ try:
     print(f"Total Unique Relationships Found: {network.number_of_edges()}\n")
 
     print("Top Relationships by Interaction Strength:")
-    # Sort edges by weight from highest to lowest to see the main duos
+
     sorted_edges = sorted(
         network.edges(data=True), key=lambda x: x[2]["weight"], reverse=True
     )
-    for u, v, data in sorted_edges[:15]:  # Show top 15 connections
+    for u, v, data in sorted_edges[:15]:
         print(f" - {u} <---> {v}: Strength {data['weight']}")
 
-    # Generate PyVis interactive visualization file
     print("\nGenerating interactive visual graph HTML file...")
     net = Network(
         height="700px",
