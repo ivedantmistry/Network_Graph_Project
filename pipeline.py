@@ -22,26 +22,21 @@ def normalize_names(raw_names):
 def build_character_network(text, window_size=15):
     doc = nlp(text)
 
-    # Step 1: Extract all raw entity mentions and their token positions
     raw_characters = []
     for token in doc:
         if token.ent_type_ == "PERSON":
             raw_characters.append(token.text)
 
-    # Step 2: Build our name normalization map
     canonical_map = normalize_names(raw_characters)
 
-    # Step 3: Extract positions using the normalized names
     characters = []
     for token in doc:
         if token.ent_type_ == "PERSON":
             normalized_name = canonical_map[token.text]
             characters.append((normalized_name, token.i))
 
-    # Step 4: Initialize NetworkX Graph
     G = nx.Graph()
 
-    # Step 5: Apply Sliding Window to find co-occurrences
     for i in range(len(characters)):
         for j in range(i + 1, len(characters)):
             char1, index1 = characters[i]
@@ -58,7 +53,6 @@ def build_character_network(text, window_size=15):
     return G
 
 
-# Test data containing name variations ('Dr. Watson' vs 'Watson')
 large_test_text = """
 Sherlock Holmes sat quietly by the fireplace in Baker Street. Dr. Watson entered the room 
 with a heavy coat. 'Holmes,' Watson said, 'the weather outside is dreadful.' 
