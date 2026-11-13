@@ -5,6 +5,9 @@ from fastcoref.modeling import FCorefModel
 import networkx as nx
 from pyvis.network import Network
 import spacy
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
+
+sia = SentimentIntensityAnalyzer()
 
 _orig_batch_setitems = pickle._Pickler._batch_setitems
 pickle._Pickler._batch_setitems = lambda self, items, obj=None: _orig_batch_setitems(
@@ -118,10 +121,40 @@ def build_character_network(text, window_size=15):
             char2, index2 = characters[j]
 
             if abs(index1 - index2) <= window_size and char1 != char2:
+                start_idx = min(index1, index2)
+                end_idx = max(index1, index2)
+
+                interaction_text = " ".join(
+                    [token.text for token in doc[start_idx : end_idx + 1]]
+                )
+                sentiment_score = sia.polarity_scores(interaction_text)["compound"]
+
+                edge_color = "#6b7280"
+                if sentiment_score > 0.1:
+                    edge_color = "#10b981"
+                elif sentiment_score < -0.1:
+                    edge_color = "#ef4444"
+
                 if G.has_edge(char1, char2):
                     G[char1][char2]["weight"] += 1
+                    current_sentiment = G[char1][char2].get("sentiment", 0)
+                    new_sentiment = (current_sentiment + sentiment_score) / 2
+                    G[char1][char2]["sentiment"] = new_sentiment
+
+                    if new_sentiment > 0.1:
+                        G[char1][char2]["color"] = "#10b981"
+                    elif new_sentiment < -0.1:
+                        G[char1][char2]["color"] = "#ef4444"
+                    else:
+                        G[char1][char2]["color"] = "#6b7280"
                 else:
-                    G.add_edge(char1, char2, weight=1)
+                    G.add_edge(
+                        char1,
+                        char2,
+                        weight=1,
+                        sentiment=sentiment_score,
+                        color=edge_color,
+                    )
 
     print("Hunting for active speaker-to-listener dialogue...")
     dialogue_interactions = extract_dialogue_interactions(doc, token_to_char)
@@ -159,7 +192,16 @@ try:
         network.edges(data=True), key=lambda x: x[2]["weight"], reverse=True
     )
     for u, v, data in sorted_edges[:15]:
-        print(f" - {u} <---> {v}: Strength {data['weight']}")
+        sentiment = data.get("sentiment", 0)
+        mood = "Neutral"
+        if sentiment > 0.1:
+            mood = "Positive"
+        elif sentiment < -0.1:
+            mood = "Negative"
+
+        print(
+            f" - {u} <---> {v}: Strength {data['weight']} | Mood: {mood} ({sentiment:.2f})"
+        )
 
     print("\nGenerating interactive visual graph HTML file...")
     net = Network(
