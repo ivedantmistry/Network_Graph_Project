@@ -1,31 +1,49 @@
-import spacy
+import pickle
+import re
+from fastcoref import spacy_component
+from fastcoref.modeling import FCorefModel
 import networkx as nx
 from pyvis.network import Network
+import spacy
 
+_orig_batch_setitems = pickle._Pickler._batch_setitems
+pickle._Pickler._batch_setitems = lambda self, items, obj=None: _orig_batch_setitems(
+    self, items, obj
+)
+FCorefModel.all_tied_weights_keys = {}
+
+print("Loading spaCy and Neural Coreference Models (this takes a moment)...")
 nlp = spacy.load("en_core_web_sm")
+nlp.add_pipe("fastcoref")
+
+
+def clean_entity_text(text):
+    """Normalizes whitespace and strips trailing possessives ('s)."""
+    text = " ".join(text.split())
+    return re.sub(r"(?:'s|’s)$", "", text).strip()
 
 
 def normalize_names(raw_names):
-    """Sorts names by length and maps short variations to their canonical full name."""
-    unique_names = list(set(raw_names))
-    unique_names.sort(key=len, reverse=True)
+    """Maps shorter name variations (e.g., 'Harry') to their canonical full name ('Harry Potter')."""
+    unique_names = sorted(set(raw_names), key=len, reverse=True)
 
     canonical_map = {}
     for name in unique_names:
         canonical_map[name] = name
-        for canonical in set(canonical_map.values()):
-            if name != canonical and name in canonical:
+        pattern = re.compile(rf"\b{re.escape(name)}\b")
+        for canonical in unique_names:
+            if len(canonical) > len(name) and pattern.search(canonical):
                 canonical_map[name] = canonical
                 break
     return canonical_map
 
 
-def extract_dialogue_interactions(doc, canonical_map):
+def extract_dialogue_interactions(doc, token_to_char):
     """
     Traverses the dependency tree to find active speakers and their listeners.
     Returns a list of tuples: (Canonical_Speaker, Canonical_Listener)
     """
-    speech_verbs = [
+    speech_verbs = {
         "say",
         "whisper",
         "shout",
@@ -37,7 +55,7 @@ def extract_dialogue_interactions(doc, canonical_map):
         "cry",
         "tell",
         "call",
-    ]
+    }
     dialogue_pairs = []
 
     for word in doc:
@@ -46,47 +64,48 @@ def extract_dialogue_interactions(doc, canonical_map):
             listener = None
 
             for child in word.children:
-                # Find the Speaker
-                if child.dep_ == "nsubj" and child.ent_type_ == "PERSON":
-                    speaker = child.text
+                if child.dep_ == "nsubj" and child.i in token_to_char:
+                    speaker = token_to_char[child.i]
 
-                if child.dep_ in ["dative", "dobj"] and child.ent_type_ == "PERSON":
-                    listener = child.text
+                if child.dep_ in ("dative", "dobj") and child.i in token_to_char:
+                    listener = token_to_char[child.i]
 
                 if child.dep_ == "prep":
                     for grandchild in child.children:
-                        if (
-                            grandchild.dep_ == "pobj"
-                            and grandchild.ent_type_ == "PERSON"
-                        ):
-                            listener = grandchild.text
+                        if grandchild.dep_ == "pobj" and grandchild.i in token_to_char:
+                            listener = token_to_char[grandchild.i]
 
-            if speaker and listener:
-                if speaker in canonical_map and listener in canonical_map:
-                    canon_speaker = canonical_map[speaker]
-                    canon_listener = canonical_map[listener]
-
-                    if canon_speaker != canon_listener:
-                        dialogue_pairs.append((canon_speaker, canon_listener))
+            if speaker and listener and speaker != listener:
+                dialogue_pairs.append((speaker, listener))
 
     return dialogue_pairs
 
 
 def build_character_network(text, window_size=15):
-    print(
-        "Processing text through spaCy NLP model (this may take a moment for large files)..."
-    )
-    doc = nlp(text)
+    print("Running neural coreference resolution (mapping pronouns to names)...")
+    raw_doc = nlp(text, component_cfg={"fastcoref": {"resolve_text": True}})
+    resolved_text = raw_doc._.resolved_text
+
+    print("Processing resolved text through standard NLP pipeline...")
+    doc = nlp(resolved_text, disable=["fastcoref"])
 
     print("Extracting character entities...")
-    raw_characters = [token.text for token in doc if token.ent_type_ == "PERSON"]
-    canonical_map = normalize_names(raw_characters)
+    person_ents = []
+    for ent in doc.ents:
+        if ent.label_ == "PERSON":
+            cleaned = clean_entity_text(ent.text)
+            if len(cleaned) > 1:
+                person_ents.append((cleaned, ent.start, ent.end))
+
+    canonical_map = normalize_names([name for name, _, _ in person_ents])
 
     characters = []
-    for token in doc:
-        if token.ent_type_ == "PERSON":
-            normalized_name = canonical_map[token.text]
-            characters.append((normalized_name, token.i))
+    token_to_char = {}
+    for cleaned, start, end in person_ents:
+        canon_name = canonical_map[cleaned]
+        characters.append((canon_name, start))
+        for idx in range(start, end):
+            token_to_char[idx] = canon_name
 
     print(
         f"Found {len(characters)} total entity mentions. Building baseline network graph..."
@@ -98,16 +117,14 @@ def build_character_network(text, window_size=15):
             char1, index1 = characters[i]
             char2, index2 = characters[j]
 
-            distance = abs(index1 - index2)
-
-            if distance <= window_size and char1 != char2:
+            if abs(index1 - index2) <= window_size and char1 != char2:
                 if G.has_edge(char1, char2):
                     G[char1][char2]["weight"] += 1
                 else:
                     G.add_edge(char1, char2, weight=1)
 
     print("Hunting for active speaker-to-listener dialogue...")
-    dialogue_interactions = extract_dialogue_interactions(doc, canonical_map)
+    dialogue_interactions = extract_dialogue_interactions(doc, token_to_char)
     print(
         f"Found {len(dialogue_interactions)} explicit conversations via syntax trees."
     )
@@ -127,6 +144,9 @@ try:
     print(f"Reading '{filename}'...")
     with open(filename, "r", encoding="utf-8") as file:
         book_text = file.read()
+
+    print("Slicing text to 10,000 characters for memory-safe neural processing...")
+    book_text = book_text[:10000]
 
     network = build_character_network(book_text, window_size=15)
 
